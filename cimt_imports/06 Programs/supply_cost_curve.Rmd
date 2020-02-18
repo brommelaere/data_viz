@@ -1,0 +1,86 @@
+---
+title: "Data Visualization: Supply Cost Charts"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+# packages ----------------------------------------------------------------
+library(ggplot2)
+library(tidyverse)
+library(RColorBrewer)
+library(forcats)
+library(stringr)
+library(magrittr)
+library(scales)
+library(dplyr)
+
+# Paths -------------------------------------------------------------------
+main <- "/Users/benrommelaere/Desktop/Data Science/data_viz/cimt_imports" #change this to local repo location
+untouched <- file.path(main, "01 Untouched")
+raw <- file.path(main, "02 Raw/Trade-Imports-Yr2017-2019/")
+base <- file.path(main, "03 Base")
+temp <- file.path(main, "04 Intermediate")
+output <- file.path(main, "05 Output")
+
+# ----------------------------------------------------------
+# 2: Supply Graphs
+# ---------------------------------------------------------- 
+load(file = file.path(base, str_c("ch27-energy-data", ".Rda", sep="")))
+
+```
+
+## Supply Cost Curves in R
+
+Supply cost curves are often used to visualize the relationship between the cost of producing a good and the quantity of the good provided. In a free market, rationally acting firms optimize their production process by minimizing costs at each possible level of production, and the result is a cost curve. The same can be said for rationally acting importer firms that seek to optimize imports of goods by minimizing import costs for each level of quantity served. This process of seeking the lowest cost source for imports will create an import supply cost curve for importers. Essentially these charts are bar charts with cost on the y-axis and quantity on the x-axis. The key distinguishing factor is that  the width of each bar also varies with the quantity imported from that source. These charts are easy to make in R with a few simple steps and can be very informative about where Canada gets its supply of imports.    
+
+To show how these charts work and how you can make them yourself, we utilize the Canadian International Merchandise Trade Database (CIMT), which offers detailed trade information on a monthly basis for a wide range of imported and exported goods by province.^[The github page for this project has a ch27-energy-data file which contains all the data for data on energy imports, including natural gas & oil. The cr_chapter_27.R file constructs this dataset from the raw underlying database downloaded from the Canadian government's open data website.] We will focus on the energy imports section as the Canadian news landscape seems to be dominated by domestic energy & pipeline related issues these days. With so many issues internally, it is useful to better understand our outside options - imports.  
+
+After loading the dataset for chapter 27 (energy imports) from the CIMT for 2017-2019, we prepare our data for charting. We first filter the data for oil imports by using the relavent harmonized system code.^[The Harmonized Commodity Description and Coding System (HS) is an international commodity classification system made up of 6 digits (HS-06).] We further filter the data to look at imports into Canada as a whole for 2019. We then sum our data across all months so that we can look at the full year in aggregate. To clean up our final graph we aggregate several small import sources into an 'other' category.^[We have set import source as the most disaggregated level available, meaning we look at US states instead of the US as a whole. We have done this as for Canada, the US represents a very large share of trade for most goods. Therefore, the largest states are often responsible for as much imports as other major trading partners outside the US.] To make our final graph easier to understand, we convert prices and quantities into more common measures in the oil industry: price per barrel and barrels per day (bpd). Finally, we create two variables we will use to assess how wide to make each of the bars in our chart: 'left_dfm' and 'right_dfm'. The difference between these two values is the quantity imported by that importer. Finally, we refactor our data so that our legend will also be sorted in the same order as the import sources appear in our graphic. 
+
+```{r create-oil-df, echo = TRUE}
+oil.df <- base.df %>% 
+  filter(hs_code == 270900,
+         province == "Canada",
+         year==2019,
+         quantity>0) %>% 
+  dplyr::group_by(trading_partner) %>% 
+  dplyr::summarise(quantity = sum(as.numeric(quantity)),
+                   value = sum(as.numeric(value))) %>%   
+  mutate(trading_partner = ifelse(quantity < 200000, "Other", trading_partner)) %>% 
+  dplyr::group_by(trading_partner) %>% 
+  dplyr::summarise(quantity = sum(as.numeric(quantity)),
+                   value = sum(as.numeric(value))) %>% 
+  mutate(price = value / (8.38641436*quantity)) %>% 
+  arrange(price) %>% 
+  mutate(quantity = quantity*8.38641436/365.25,
+         right_dfm = cumsum(quantity),
+         left_dfm = right_dfm - quantity,
+         name1 = fct_reorder(as.factor(trading_partner), right_dfm))
+```
+
+### Creating Supply Cost Curve
+Now that our data is tidy, we can easily plot our supply chart using `geom_rect()` which allows us to plot flexible rectangles which we will assemble into a supply cost curve. First, we set `ymin == 0` as we want all our rectangles to start at a price of $0. The height of each rectangle can then easily be set to our calculated price of imports. Next we utilize the 'left_dfm' and 'right_dfm' variables we previous created. The 'left_dfm' variable tracks where each rectangle should start on the range of the x-axis and 'right_dfm' variable tracks where each rectangle should end. Finally, we set the fill of each recentangle to our import source so that our chart is easy to read. The rest of the `ggplot()` code simply formats the `geom_rect()` chart we have created. 
+```{r oil-graph, echo=TRUE}
+max_x = plyr::round_any(max(oil.df$right_dfm), 100, f = ceiling)
+max_y = plyr::round_any(max(oil.df$price), 1, f = ceiling)
+
+ggplot(oil.df, aes(ymin = 0)) +
+  geom_rect(aes(xmin = left_dfm, xmax = right_dfm, ymax = `price`, fill = name1)) +
+  scale_x_continuous(labels = scales::comma, limits = c(0, max_x)) +
+  labs(y = "Import Price ($/barrel)",
+       x = "Quantity (bpd)",
+       title = "Crude Oil Import Supply Curve",
+       subtitle = "Jan-Dec 2019 Import Price vs. Quantity Imported",
+       fill = "Import Origin: Country/State") +
+  theme(legend.text = element_text(size = 6),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"),
+        plot.margin=unit(c(0.5,0.5,2,0.5),"cm"),
+        plot.caption = element_text(hjust = 0, size = 6))  +
+  scale_y_continuous(limits = c(0, max_y), labels = dollar) +
+  scale_fill_brewer(palette = "Set3")
+```
+
+As we can see from this chart, our cheapest souce of imported oil comes from North Dakota, but it is unable to meet our entire import demand. Indiana and Louisina provide relatively affordable sources of oil, but in limited quantities. The vast majority of our oil comes from Texas, and the Saudi Arabia both cost roughly $60 a barrel on average in 2019.
